@@ -58,20 +58,9 @@ pub struct File(FileDesc);
 // https://github.com/rust-lang/rust/pull/67774
 macro_rules! cfg_has_statx {
     ({ $($then_tt:tt)* } else { $($else_tt:tt)* }) => {
-        cfg_if::cfg_if! {
-            if #[cfg(all(target_os = "linux", target_env = "gnu"))] {
-                $($then_tt)*
-            } else {
-                $($else_tt)*
-            }
-        }
+        $($else_tt)*
     };
-    ($($block_inner:tt)*) => {
-        #[cfg(all(target_os = "linux", target_env = "gnu"))]
-        {
-            $($block_inner)*
-        }
-    };
+    ($($block_inner:tt)*) => {};
 }
 
 cfg_has_statx! {{
