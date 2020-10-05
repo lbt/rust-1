@@ -1363,7 +1363,14 @@ fn parse_target_triple(matches: &getopts::Matches, error_format: ErrorOutputType
             })
         }
         Some(target) => TargetTriple::TargetTriple(target),
-        _ => TargetTriple::from_triple(host_triple()),
+	// In SFOS we use SB2 and need to tell rust what the
+        // 'default' target is. If the SB2_RUST_TARGET_TRIPLE
+        // environment variable is set then it is used. Otherwise
+        // the fallback is the host_triple as usual
+        _ => match std::env::var("SB2_RUST_TARGET_TRIPLE") {
+            Ok(tgt) => TargetTriple::TargetTriple(tgt),
+            Err(_) => TargetTriple::from_triple(host_triple()),
+	}
     }
 }
 
