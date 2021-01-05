@@ -5,7 +5,10 @@ use crate::sys;
 use crate::sys::cvt;
 use crate::sys::process::process_common::*;
 
-use libc::{c_int, gid_t, pid_t, uid_t};
+use libc::{c_int, gid_t, pid_t, uid_t, dlsym, c_char};
+use crate::intrinsics::transmute;
+use crate::ffi::{OsString};
+use sys::os::getenv;
 
 ////////////////////////////////////////////////////////////////////////////////
 // Command
@@ -32,6 +35,61 @@ impl Command {
         }
 
         let (input, output) = sys::pipe::anon_pipe()?;
+
+	// If there is a RUST_EXEC_SHIM (could be "/usr/bin/env --")
+	// then we're probably going to directly execvp it via dlsym
+	// to avoid issues with threads and malloc post-fork and
+	// pre-exec. That will then re-execvp but this time sb2 will
+	// do magic. See also RUST_EXECVP_REAL
+
+	// We do this here and pass so do_exec() so any malloc's are
+	// pre-fork()
+
+	// At this point self.program is the real program. argv[0] is
+	// now a clone() of program.
+
+	match getenv(&OsString::from("SB2_RUST_EXECVP_SHIM"))? {
+	    Some(var) => { // handle "/usr/bin/env <arg> <arg>"
+		let var = var.into_string().expect("Valid string"); // so we can .split()
+		let words: Vec<&str> = var.as_str().split(" ").collect();
+		for w in words.iter().rev() {
+		    self.insert_program(w.to_string());
+		};
+		// At this point self.program is the SHIM. argv[0] is
+		// the SHIM and argv[>0] is the real program.
+	    },
+	    None => {} // Business as usual
+	};
+	match getenv(&OsString::from("SB2_RUST_USE_REAL_EXECVP"))? {
+	    Some(_var) => unsafe {
+		let real_execvp_p = dlsym(libc::RTLD_NEXT,
+		      "execvp\0".as_ptr() as *const c_char) as *const ();
+		self.execvp = Some(
+		    transmute::<*const (), ExecvpFn>(real_execvp_p) );
+	    },
+	    None => {}
+	};
+	match getenv(&OsString::from("SB2_RUST_USE_REAL_FN"))? {
+	    Some(_var) => unsafe {
+		let real_dup2_p = dlsym(libc::RTLD_NEXT,
+		      "dup2\0".as_ptr() as *const c_char) as *const ();
+		self.dup2 = Some(
+		    transmute::<*const (), Dup2Fn>(real_dup2_p) );
+		let real_chdir_p = dlsym(libc::RTLD_NEXT,
+		      "chdir\0".as_ptr() as *const c_char) as *const ();
+		self.chdir = Some(
+		    transmute::<*const (), ChdirFn>(real_chdir_p) );
+		let real_setuid_p = dlsym(libc::RTLD_NEXT,
+		      "setuid\0".as_ptr() as *const c_char) as *const ();
+		self.setuid = Some(
+		    transmute::<*const (), SetuidFn>(real_setuid_p) );
+		let real_setgid_p = dlsym(libc::RTLD_NEXT,
+		      "setgid\0".as_ptr() as *const c_char) as *const ();
+		self.setgid = Some(
+		    transmute::<*const (), SetgidFn>(real_setgid_p) );
+	    },
+	    None => {}
+	};
 
         // Whatever happens after the fork is almost for sure going to touch or
         // look at the environment in one way or another (PATH in `execvp` or
@@ -135,7 +193,30 @@ impl Command {
             Err(e) => e,
         }
     }
-
+    fn unwrap_dup2(&mut self, src: c_int, dst: c_int) -> c_int {
+	match self.dup2 {
+	    Some(real_dup2) => { (real_dup2)(src, dst) },
+	    None => { unsafe { libc::dup2(src, dst) } }
+	}
+    }
+    fn unwrap_chdir(&self, dir: *const c_char) -> c_int {
+	match self.chdir {
+	    Some(real_chdir) => { (real_chdir)(dir) },
+	    None => { unsafe { libc::chdir(dir) } }
+	}
+    }
+    fn unwrap_setuid(&self, uid: uid_t) -> c_int {
+	match self.setuid {
+	    Some(real_setuid) => { (real_setuid)(uid) },
+	    None => { unsafe { libc::setuid(uid) } }
+	}
+    }
+    fn unwrap_setgid(&self, gid: gid_t) -> c_int {
+	match self.setgid {
+	    Some(real_setgid) => { (real_setgid)(gid) },
+	    None => { unsafe { libc::setgid(gid) } }
+	}
+    }
     // And at this point we've reached a special time in the life of the
     // child. The child must now be considered hamstrung and unable to
     // do anything other than syscalls really. Consider the following
@@ -174,19 +255,19 @@ impl Command {
         use crate::sys::{self, cvt_r};
 
         if let Some(fd) = stdio.stdin.fd() {
-            cvt_r(|| libc::dup2(fd, libc::STDIN_FILENO))?;
+            cvt_r(|| self.unwrap_dup2(fd, libc::STDIN_FILENO))?;
         }
         if let Some(fd) = stdio.stdout.fd() {
-            cvt_r(|| libc::dup2(fd, libc::STDOUT_FILENO))?;
+            cvt_r(|| self.unwrap_dup2(fd, libc::STDOUT_FILENO))?;
         }
         if let Some(fd) = stdio.stderr.fd() {
-            cvt_r(|| libc::dup2(fd, libc::STDERR_FILENO))?;
+            cvt_r(|| self.unwrap_dup2(fd, libc::STDERR_FILENO))?;
         }
 
         #[cfg(not(target_os = "l4re"))]
         {
             if let Some(u) = self.get_gid() {
-                cvt(libc::setgid(u as gid_t))?;
+                cvt(self.unwrap_setgid(u as gid_t))?;
             }
             if let Some(u) = self.get_uid() {
                 // When dropping privileges from root, the `setgroups` call
@@ -199,11 +280,11 @@ impl Command {
                 //FIXME: Redox kernel does not support setgroups yet
                 #[cfg(not(target_os = "redox"))]
                 let _ = libc::setgroups(0, ptr::null());
-                cvt(libc::setuid(u as uid_t))?;
+                cvt(self.unwrap_setuid(u as uid_t))?;
             }
         }
         if let Some(ref cwd) = *self.get_cwd() {
-            cvt(libc::chdir(cwd.as_ptr()))?;
+            cvt(self.unwrap_chdir(cwd.as_ptr()))?;
         }
 
         // emscripten has no signal support.
@@ -250,9 +331,17 @@ impl Command {
             _reset = Some(Reset(*sys::os::environ()));
             *sys::os::environ() = envp.as_ptr();
         }
-
-        libc::execvp(self.get_program().as_ptr(), self.get_argv().as_ptr());
-        Err(io::Error::last_os_error())
+	match self.execvp {
+	    Some(real_execvp) => {
+		(real_execvp)(self.get_program().as_ptr(),
+			      self.get_argv().as_ptr())
+	    },
+	    None => {
+		libc::execvp(self.get_program().as_ptr(),
+			     self.get_argv().as_ptr())
+	    }
+	};
+	Err(io::Error::last_os_error())
     }
 
     #[cfg(not(any(
@@ -265,6 +354,7 @@ impl Command {
         _: &ChildPipes,
         _: Option<&CStringArray>,
     ) -> io::Result<Option<Process>> {
+	eprintln!("process_unix:270: in null posix_spawn");
         Ok(None)
     }
 
@@ -283,10 +373,16 @@ impl Command {
         use crate::mem::MaybeUninit;
         use crate::sys;
 
+	let skip_spawnvp :bool = match getenv(&OsString::from("SB2_RUST_NO_SPAWNVP"))? {
+	    Some(_var) => true,
+	    None => false
+	};
+
         if self.get_gid().is_some()
             || self.get_uid().is_some()
             || self.env_saw_path()
             || !self.get_closures().is_empty()
+	    || skip_spawnvp
         {
             return Ok(None);
         }

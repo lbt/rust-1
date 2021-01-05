@@ -71,10 +71,15 @@ pub struct Command {
     // located. Whenever we add a key we update it in place if it's already
     // present, and whenever we remove a key we update the locations of all
     // other keys.
-    program: CString,
+    pub(crate) program: CString,
     args: Vec<CString>,
     argv: Argv,
     env: CommandEnv,
+    pub(crate) execvp: Option<ExecvpFn>,
+    pub(crate) dup2: Option<Dup2Fn>,
+    pub(crate) chdir: Option<ChdirFn>,
+    pub(crate) setuid: Option<SetuidFn>,
+    pub(crate) setgid: Option<SetgidFn>,
 
     cwd: Option<CString>,
     uid: Option<uid_t>,
@@ -86,6 +91,12 @@ pub struct Command {
     stderr: Option<Stdio>,
 }
 
+pub(crate) type ExecvpFn = fn(*const c_char, *const *const c_char)->c_int;
+pub(crate) type Dup2Fn = fn(c_int, c_int)->c_int;
+pub(crate) type ChdirFn = fn(*const c_char)->c_int;
+pub(crate) type SetuidFn = fn(uid_t)->c_int;
+pub(crate) type SetgidFn = fn(gid_t)->c_int;
+    
 // Create a new type for argv, so that we can make it `Send`
 struct Argv(Vec<*const c_char>);
 
@@ -130,20 +141,36 @@ impl Command {
     pub fn new(program: &OsStr) -> Command {
         let mut saw_nul = false;
         let program = os2c(program, &mut saw_nul);
+        let arg0 = program.clone();
         Command {
-            argv: Argv(vec![program.as_ptr(), ptr::null()]),
-            args: vec![program.clone()],
-            program,
+            argv: Argv(vec![arg0.as_ptr(), ptr::null()]),
+            args: vec![arg0],
+            program: program,
             env: Default::default(),
+	    execvp: None,
+	    dup2: None,
+	    chdir: None,
+	    setuid: None,
+	    setgid: None,
             cwd: None,
             uid: None,
             gid: None,
-            saw_nul,
+            saw_nul: saw_nul,
             closures: Vec::new(),
             stdin: None,
             stdout: None,
             stderr: None,
         }
+    }
+
+    // This allows process_unix::{spawn, exec} to push program to the
+    // start of /usr/bin/env's arg list
+    pub fn insert_program(&mut self, arg: String) {
+	let arg = OsString::from(arg);
+        let arg = os2c(&arg, &mut self.saw_nul);
+	self.program = arg.clone();
+	self.argv.0.insert(0, arg.as_ptr());
+        self.args.insert(0, arg);
     }
 
     pub fn set_arg_0(&mut self, arg: &OsStr) {
