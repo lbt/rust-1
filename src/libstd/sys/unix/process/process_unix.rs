@@ -17,6 +17,7 @@ impl Command {
         default: Stdio,
         needs_stdin: bool,
     ) -> io::Result<(Process, StdioPipes)> {
+	eprintln!("process_unix:20: Entering spawn: {:?}", self.get_program());
         const CLOEXEC_MSG_FOOTER: &[u8] = b"NOEX";
 
         let envp = self.capture_env();
@@ -43,6 +44,7 @@ impl Command {
         // in its own process.
         let result = unsafe {
             let _env_lock = sys::os::env_lock();
+	    eprintln!("process_unix:48: About to fork");
             cvt(libc::fork())?
         };
 
@@ -68,10 +70,13 @@ impl Command {
                     assert!(output.write(&bytes).is_ok());
                     libc::_exit(1)
                 }
-                n => n,
+                n => {
+		    eprintln!("process_unix:74: forked pid {}", n);
+		    n
+		},
             }
         };
-
+	
         let mut p = Process { pid, status: None };
         drop(output);
         let mut bytes = [0; 8];
@@ -172,7 +177,7 @@ impl Command {
         maybe_envp: Option<&CStringArray>,
     ) -> Result<!, io::Error> {
         use crate::sys::{self, cvt_r};
-
+	eprintln!("process_unix:178: in do_exec");
         if let Some(fd) = stdio.stdin.fd() {
             cvt_r(|| libc::dup2(fd, libc::STDIN_FILENO))?;
         }
@@ -250,7 +255,7 @@ impl Command {
             _reset = Some(Reset(*sys::os::environ()));
             *sys::os::environ() = envp.as_ptr();
         }
-
+	eprintln!("process_unix:255: in do_exec");
         libc::execvp(self.get_program().as_ptr(), self.get_argv().as_ptr());
         Err(io::Error::last_os_error())
     }
@@ -265,6 +270,7 @@ impl Command {
         _: &ChildPipes,
         _: Option<&CStringArray>,
     ) -> io::Result<Option<Process>> {
+	eprintln!("process_unix:270: in null posix_spawn");
         Ok(None)
     }
 
@@ -283,11 +289,13 @@ impl Command {
         use crate::mem::MaybeUninit;
         use crate::sys;
 
+	eprintln!("process_unix:289: in real posix_spawn");
         if self.get_gid().is_some()
             || self.get_uid().is_some()
             || self.env_saw_path()
             || !self.get_closures().is_empty()
         {
+	    eprintln!("process_unix:295: posix_spawn nope 1 gid:{} uid:{} env_saw_path:{} closures:{}", self.get_gid().is_some(), self.get_uid().is_some(), self.env_saw_path(), !self.get_closures().is_empty());
             return Ok(None);
         }
 
@@ -296,9 +304,11 @@ impl Command {
         {
             if let Some(version) = sys::os::glibc_version() {
                 if version < (2, 24) {
+		    eprintln!("process_unix:304: posix_spawn glibc too old");
                     return Ok(None);
                 }
             } else {
+		eprintln!("process_unix:308: posix_spawn no glibc version");
                 return Ok(None);
             }
         }
@@ -316,7 +326,10 @@ impl Command {
         let addchdir = match self.get_cwd() {
             Some(cwd) => match posix_spawn_file_actions_addchdir_np.get() {
                 Some(f) => Some((f, cwd)),
-                None => return Ok(None),
+                None => {
+		    eprintln!("process_unix:327: posix_spawn chdir issue");
+		    return Ok(None)
+		},
             },
             None => None,
         };
@@ -387,6 +400,7 @@ impl Command {
             // Make sure we synchronize access to the global `environ` resource
             let _env_lock = sys::os::env_lock();
             let envp = envp.map(|c| c.as_ptr()).unwrap_or_else(|| *sys::os::environ() as *const _);
+	    eprintln!("process_unix:394:  doing posix_spawnp for {:?}", self.get_program());
             let ret = libc::posix_spawnp(
                 &mut p.pid,
                 self.get_program().as_ptr(),
@@ -395,6 +409,7 @@ impl Command {
                 self.get_argv().as_ptr() as *const _,
                 envp as *const _,
             );
+	    eprintln!("process_unix:32: spawned pid {}", p.pid);
             if ret == 0 { Ok(Some(p)) } else { Err(io::Error::from_raw_os_error(ret)) }
         }
     }
