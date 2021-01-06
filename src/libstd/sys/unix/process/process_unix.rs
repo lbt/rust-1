@@ -17,7 +17,7 @@ impl Command {
         default: Stdio,
         needs_stdin: bool,
     ) -> io::Result<(Process, StdioPipes)> {
-	eprintln!("process_unix:20: Entering spawn: {:?}", self.get_program());
+	eprintln!("process_unix:20: pid {} Entering spawn: {:?}", sys::os::getpid(), self.get_program());
         const CLOEXEC_MSG_FOOTER: &[u8] = b"NOEX";
 
         let envp = self.capture_env();
@@ -44,7 +44,7 @@ impl Command {
         // in its own process.
         let result = unsafe {
             let _env_lock = sys::os::env_lock();
-	    eprintln!("process_unix:48: About to fork");
+	    eprintln!("process_unix:48: pid {} About to fork", sys::os::getpid());
             cvt(libc::fork())?
         };
 
@@ -71,12 +71,12 @@ impl Command {
                     libc::_exit(1)
                 }
                 n => {
-		    eprintln!("process_unix:74: forked pid {}", n);
+		    eprintln!("process_unix:74: pid {} forked pid {} as child", sys::os::getpid(), n);
 		    n
 		},
             }
         };
-	
+
         let mut p = Process { pid, status: None };
         drop(output);
         let mut bytes = [0; 8];
@@ -177,16 +177,19 @@ impl Command {
         maybe_envp: Option<&CStringArray>,
     ) -> Result<!, io::Error> {
         use crate::sys::{self, cvt_r};
-	eprintln!("process_unix:178: in do_exec");
+	eprintln!("process_unix:178: pid {} in do_exec", sys::os::getpid());
         if let Some(fd) = stdio.stdin.fd() {
             cvt_r(|| libc::dup2(fd, libc::STDIN_FILENO))?;
         }
+	eprintln!("process_unix:178: pid {} done dup2(STDIN)", sys::os::getpid());
         if let Some(fd) = stdio.stdout.fd() {
             cvt_r(|| libc::dup2(fd, libc::STDOUT_FILENO))?;
         }
+	eprintln!("process_unix:178: pid {} done dup2(STDOUT)", sys::os::getpid());
         if let Some(fd) = stdio.stderr.fd() {
             cvt_r(|| libc::dup2(fd, libc::STDERR_FILENO))?;
         }
+	eprintln!("process_unix:178: pid {} done dup2(STDERR)", sys::os::getpid());
 
         #[cfg(not(target_os = "l4re"))]
         {
@@ -207,9 +210,11 @@ impl Command {
                 cvt(libc::setuid(u as uid_t))?;
             }
         }
+	eprintln!("process_unix:178: pid {} done setuid", sys::os::getpid());
         if let Some(ref cwd) = *self.get_cwd() {
             cvt(libc::chdir(cwd.as_ptr()))?;
         }
+	eprintln!("process_unix:178: pid {} done chdir", sys::os::getpid());
 
         // emscripten has no signal support.
         #[cfg(not(target_os = "emscripten"))]
@@ -230,10 +235,12 @@ impl Command {
                 return Err(io::Error::last_os_error());
             }
         }
+	eprintln!("process_unix:178: pid {} done signal", sys::os::getpid());
 
         for callback in self.get_closures().iter_mut() {
             callback()?;
         }
+	eprintln!("process_unix:178: pid {} done callbacks", sys::os::getpid());
 
         // Although we're performing an exec here we may also return with an
         // error from this function (without actually exec'ing) in which case we
@@ -255,8 +262,9 @@ impl Command {
             _reset = Some(Reset(*sys::os::environ()));
             *sys::os::environ() = envp.as_ptr();
         }
-	eprintln!("process_unix:255: in do_exec");
+	eprintln!("process_unix:255: pid {} will do_exec of {:?}", sys::os::getpid(), self.get_program());
         libc::execvp(self.get_program().as_ptr(), self.get_argv().as_ptr());
+	eprintln!("process_unix:257: pid {} do_exec of {:?} failed last_os_error={:?}", sys::os::getpid(), self.get_program(), io::Error::last_os_error());
         Err(io::Error::last_os_error())
     }
 
@@ -295,7 +303,7 @@ impl Command {
             || self.env_saw_path()
             || !self.get_closures().is_empty()
         {
-	    eprintln!("process_unix:295: posix_spawn nope 1 gid:{} uid:{} env_saw_path:{} closures:{}", self.get_gid().is_some(), self.get_uid().is_some(), self.env_saw_path(), !self.get_closures().is_empty());
+	    eprintln!("process_unix:295: pid {} posix_spawn nope 1 gid:{} uid:{} env_saw_path:{} closures:{}", sys::os::getpid(), self.get_gid().is_some(), self.get_uid().is_some(), self.env_saw_path(), !self.get_closures().is_empty());
             return Ok(None);
         }
 
@@ -400,7 +408,7 @@ impl Command {
             // Make sure we synchronize access to the global `environ` resource
             let _env_lock = sys::os::env_lock();
             let envp = envp.map(|c| c.as_ptr()).unwrap_or_else(|| *sys::os::environ() as *const _);
-	    eprintln!("process_unix:394:  doing posix_spawnp for {:?}", self.get_program());
+	    eprintln!("process_unix:394: pid {} doing posix_spawnp for {:?}", sys::os::getpid(), self.get_program());
             let ret = libc::posix_spawnp(
                 &mut p.pid,
                 self.get_program().as_ptr(),
@@ -409,7 +417,7 @@ impl Command {
                 self.get_argv().as_ptr() as *const _,
                 envp as *const _,
             );
-	    eprintln!("process_unix:32: spawned pid {}", p.pid);
+	    eprintln!("process_unix:32: pid {} spawned pid {} as child", sys::os::getpid(), p.pid);
             if ret == 0 { Ok(Some(p)) } else { Err(io::Error::from_raw_os_error(ret)) }
         }
     }
