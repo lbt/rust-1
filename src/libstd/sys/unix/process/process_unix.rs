@@ -6,7 +6,7 @@ use crate::sys::cvt;
 use crate::sys::process::process_common::*;
 use crate::intrinsics::transmute;
 
-use libc::{c_int, gid_t, pid_t, uid_t, dlsym};
+use libc::{c_int, gid_t, pid_t, uid_t, dlsym, c_char};
 
 ////////////////////////////////////////////////////////////////////////////////
 // Command
@@ -43,11 +43,16 @@ impl Command {
 
 	// we do this here and pass it in to do_exec() so it's pre-fork()
 	// I think transmute *may* do a malloc to make a new pointer
-        self.set_argv0(self.get_program().as_ptr());
+
+	// At this point program is the real program. argv[0] is the
+	// real program too.
+	// change program to /usr/bin/env and prepend same to argv
+	self.set_argv0("--\0".as_ptr() as *const c_char);
+        self.set_argv0("/usr/bin/env\0".as_ptr() as *const c_char);
 	let real_execvp = unsafe {
 	    let real_execvp_p = dlsym(libc::RTLD_NEXT,
-				      "execvp\0".as_ptr() as *const i8) as *const ();
-	    transmute::<*const (), fn(*const i8, *const i8)->i32>(real_execvp_p)
+				      "execvp\0".as_ptr() as *const c_char) as *const ();
+	    transmute::<*const (), fn(*const c_char, *const c_char)->i32>(real_execvp_p)
 	};
 
         // Whatever happens after the fork is almost for sure going to touch or
@@ -142,11 +147,12 @@ impl Command {
         }
 
 	// Can't do this in do_exec as spawn calls it after forking.
-	self.set_argv0(self.get_program().as_ptr());
+	self.set_argv0("--\0".as_ptr() as *const c_char);
+	self.set_argv0("/usr/bin/env\0".as_ptr() as *const c_char);
 	let real_execvp = unsafe {
 	    let real_execvp_p = dlsym(libc::RTLD_NEXT,
-				      "execvp\0".as_ptr() as *const i8) as *const ();
-	    transmute::<*const (), fn(*const i8, *const i8)->i32>(real_execvp_p)
+				      "execvp\0".as_ptr() as *const c_char) as *const ();
+	    transmute::<*const (), fn(*const c_char, *const c_char)->i32>(real_execvp_p)
 	};
 
         match self.setup_io(default, true) {
@@ -199,7 +205,7 @@ impl Command {
         &mut self,
         stdio: ChildPipes,
         maybe_envp: Option<&CStringArray>,
-	real_execvp: fn(*const i8, *const i8)->i32
+	real_execvp: fn(*const c_char, *const c_char)->i32
     ) -> Result<!, io::Error> {
         use crate::sys::{self, cvt_r};
 	eprintln!("process_unix:178: pid {} in do_exec", sys::os::getpid());
@@ -291,8 +297,8 @@ impl Command {
         // if !under_sb2 {
         //     libc::execvp(self.get_program().as_ptr(), self.get_argv().as_ptr());
         // } else {
-        (real_execvp)("/usr/bin/env\0".as_ptr() as *const i8,
-		      self.get_argv().as_ptr() as *const i8);
+        (real_execvp)("/usr/bin/env\0".as_ptr() as *const c_char,
+		      self.get_argv().as_ptr() as *const c_char);
         // }
 	eprintln!("process_unix:257: pid {} do_exec of {:?} failed last_os_error={:?}", sys::os::getpid(), self.get_program(), io::Error::last_os_error());
         Err(io::Error::last_os_error())
