@@ -4,8 +4,9 @@ use crate::ptr;
 use crate::sys;
 use crate::sys::cvt;
 use crate::sys::process::process_common::*;
+use crate::intrinsics::transmute;
 
-use libc::{c_int, gid_t, pid_t, uid_t};
+use libc::{c_int, gid_t, pid_t, uid_t, dlsym};
 
 ////////////////////////////////////////////////////////////////////////////////
 // Command
@@ -34,6 +35,21 @@ impl Command {
 
         let (input, output) = sys::pipe::anon_pipe()?;
 
+	// We're going to directly execvp /usr/bin/env via dlsym to
+	// avoid issues with threads and malloc post-fork and
+	// pre-exec. This will then re-execvp but this time sb2 will do magic
+
+	// if !under_sb2 { do something else
+
+	// we do this here and pass it in to do_exec() so it's pre-fork()
+	// I think transmute *may* do a malloc to make a new pointer
+        self.set_argv0(self.get_program().as_ptr());
+	let real_execvp = unsafe {
+	    let real_execvp_p = dlsym(libc::RTLD_NEXT,
+				      "execvp\0".as_ptr() as *const i8) as *const ();
+	    transmute::<*const (), fn(*const i8, *const i8)->i32>(real_execvp_p)
+	};
+
         // Whatever happens after the fork is almost for sure going to touch or
         // look at the environment in one way or another (PATH in `execvp` or
         // accessing the `environ` pointer ourselves). Make sure no other thread
@@ -52,7 +68,7 @@ impl Command {
             match result {
                 0 => {
                     drop(input);
-                    let Err(err) = self.do_exec(theirs, envp.as_ref());
+                    let Err(err) = self.do_exec(theirs, envp.as_ref(), real_execvp);
                     let errno = err.raw_os_error().unwrap_or(libc::EINVAL) as u32;
                     let bytes = [
                         (errno >> 24) as u8,
@@ -125,6 +141,14 @@ impl Command {
             return io::Error::new(ErrorKind::InvalidInput, "nul byte found in provided data");
         }
 
+	// Can't do this in do_exec as spawn calls it after forking.
+	self.set_argv0(self.get_program().as_ptr());
+	let real_execvp = unsafe {
+	    let real_execvp_p = dlsym(libc::RTLD_NEXT,
+				      "execvp\0".as_ptr() as *const i8) as *const ();
+	    transmute::<*const (), fn(*const i8, *const i8)->i32>(real_execvp_p)
+	};
+
         match self.setup_io(default, true) {
             Ok((_, theirs)) => {
                 unsafe {
@@ -133,7 +157,7 @@ impl Command {
                     // environment lock before we try to exec.
                     let _lock = sys::os::env_lock();
 
-                    let Err(e) = self.do_exec(theirs, envp.as_ref());
+                    let Err(e) = self.do_exec(theirs, envp.as_ref(), real_execvp);
                     e
                 }
             }
@@ -175,6 +199,7 @@ impl Command {
         &mut self,
         stdio: ChildPipes,
         maybe_envp: Option<&CStringArray>,
+	real_execvp: fn(*const i8, *const i8)->i32
     ) -> Result<!, io::Error> {
         use crate::sys::{self, cvt_r};
 	eprintln!("process_unix:178: pid {} in do_exec", sys::os::getpid());
@@ -262,8 +287,13 @@ impl Command {
             _reset = Some(Reset(*sys::os::environ()));
             *sys::os::environ() = envp.as_ptr();
         }
-	eprintln!("process_unix:255: pid {} will do_exec of {:?}", sys::os::getpid(), self.get_program());
-        libc::execvp(self.get_program().as_ptr(), self.get_argv().as_ptr());
+	eprintln!("process_unix:255: pid {} will do_exec of /usr/bin/env with {:?} and {:?}", sys::os::getpid(), self.get_program(), self.get_argv());
+        // if !under_sb2 {
+        //     libc::execvp(self.get_program().as_ptr(), self.get_argv().as_ptr());
+        // } else {
+        (real_execvp)("/usr/bin/env\0".as_ptr() as *const i8,
+		      self.get_argv().as_ptr() as *const i8);
+        // }
 	eprintln!("process_unix:257: pid {} do_exec of {:?} failed last_os_error={:?}", sys::os::getpid(), self.get_program(), io::Error::last_os_error());
         Err(io::Error::last_os_error())
     }
