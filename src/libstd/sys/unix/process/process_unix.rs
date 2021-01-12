@@ -5,6 +5,8 @@ use crate::sys;
 use crate::sys::cvt;
 use crate::sys::process::process_common::*;
 use crate::intrinsics::transmute;
+use crate::ffi::{OsString, CString};
+use sys::os::getenv;
 
 use libc::{c_int, gid_t, pid_t, uid_t, dlsym, c_char};
 
@@ -35,26 +37,45 @@ impl Command {
 
         let (input, output) = sys::pipe::anon_pipe()?;
 
-	// We're going to directly execvp /usr/bin/env via dlsym to
-	// avoid issues with threads and malloc post-fork and
-	// pre-exec. This will then re-execvp but this time sb2 will do magic
+	// If there is a RUST_EXEC_SHIM (could be "/usr/bin/env --")
+	// then we're probably going to directly execvp it via dlsym
+	// to avoid issues with threads and malloc post-fork and
+	// pre-exec. That will then re-execvp but this time sb2 will
+	// do magic. See also RUST_EXECVP_REAL
 
-	// if !under_sb2 { do something else
+	// We do this here and pass so do_exec() so any malloc's are
+	// pre-fork()
+	
+	// At this point self.program is the real program. argv[0] is
+	// the real program too.
+	
+	match getenv(&OsString::from("RUST_EXEC_SHIM"))? {
+	    Some(var) => { // handle "/usr/bin/env <arg> <arg>"
+		let var = var.into_string().expect("Valid string");
+		// Convert to a Vec of C \0 terminated strings
+//		let mut words: Vec<&CStr> = var.split(" ").map(|&s|{CString::new(s.as_bytes()).unwrap()}).collect();
+		let words: Vec<&str> = var.as_str().split(" ").collect();
+		for w in words.iter().rev() {
+		    let cw = CString::new(w.as_bytes()).unwrap();
+		    self.set_argv0(cw.as_ptr() as *const c_char);
+		    self.program = cw;
+		    eprintln!("process_unix:54: pid {} handling RUST_EXEC_SHIM arg: {}", sys::os::getpid(), w);
 
-	// we do this here and pass it in to do_exec() so it's pre-fork()
-	// I think transmute *may* do a malloc to make a new pointer
-
-	// At this point program is the real program. argv[0] is the
-	// real program too.
-	// change program to /usr/bin/env and prepend same to argv
-	self.set_argv0("--\0".as_ptr() as *const c_char);
-        self.set_argv0("/usr/bin/env\0".as_ptr() as *const c_char);
-	let real_execvp = unsafe {
-	    let real_execvp_p = dlsym(libc::RTLD_NEXT,
-				      "execvp\0".as_ptr() as *const c_char) as *const ();
-	    transmute::<*const (), fn(*const c_char, *const c_char)->i32>(real_execvp_p)
+		};
+		// Now prog and arg0 = /usr/bin/env
+	    },
+	    None => {} // Business as usual
 	};
-
+	match getenv(&OsString::from("RUST_EXECVP_REAL"))? {
+	    Some(_var) => unsafe {
+		let real_execvp_p = dlsym(libc::RTLD_NEXT,
+		      "execvp\0".as_ptr() as *const c_char) as *const ();
+		self.execvp = Some(
+		    transmute::<*const (), ExecvpFn>(real_execvp_p) );
+	    },
+	    None => {}
+	};
+    
         // Whatever happens after the fork is almost for sure going to touch or
         // look at the environment in one way or another (PATH in `execvp` or
         // accessing the `environ` pointer ourselves). Make sure no other thread
@@ -73,7 +94,7 @@ impl Command {
             match result {
                 0 => {
                     drop(input);
-                    let Err(err) = self.do_exec(theirs, envp.as_ref(), real_execvp);
+                    let Err(err) = self.do_exec(theirs, envp.as_ref());
                     let errno = err.raw_os_error().unwrap_or(libc::EINVAL) as u32;
                     let bytes = [
                         (errno >> 24) as u8,
@@ -149,11 +170,6 @@ impl Command {
 	// Can't do this in do_exec as spawn calls it after forking.
 	self.set_argv0("--\0".as_ptr() as *const c_char);
 	self.set_argv0("/usr/bin/env\0".as_ptr() as *const c_char);
-	let real_execvp = unsafe {
-	    let real_execvp_p = dlsym(libc::RTLD_NEXT,
-				      "execvp\0".as_ptr() as *const c_char) as *const ();
-	    transmute::<*const (), fn(*const c_char, *const c_char)->i32>(real_execvp_p)
-	};
 
         match self.setup_io(default, true) {
             Ok((_, theirs)) => {
@@ -163,15 +179,28 @@ impl Command {
                     // environment lock before we try to exec.
                     let _lock = sys::os::env_lock();
 
-                    let Err(e) = self.do_exec(theirs, envp.as_ref(), real_execvp);
+                    let Err(e) = self.do_exec(theirs, envp.as_ref());
                     e
                 }
             }
             Err(e) => e,
         }
     }
-
-    // And at this point we've reached a special time in the life of the
+    // see .../libstd/sys/unix/os.rs#512
+    // fn getenv(k: String) -> Result<String, Error> {
+    // 	let k = CString::new(k.as_bytes())?;
+    // 	unsafe {
+    //         let _guard = env_lock();
+    //         let s = libc::getenv(k.as_ptr()) as *const libc::c_char;
+    //         let ret = if s.is_null() {
+    // 		None
+    //         } else {
+    // 		Some(OsStringExt::from_vec(CStr::from_ptr(s).to_bytes().to_vec()))
+    //         };
+    //         Ok(ret)
+    // 	}
+    // }
+    // and at this point we've reached a special time in the life of the
     // child. The child must now be considered hamstrung and unable to
     // do anything other than syscalls really. Consider the following
     // scenario:
@@ -205,7 +234,6 @@ impl Command {
         &mut self,
         stdio: ChildPipes,
         maybe_envp: Option<&CStringArray>,
-	real_execvp: fn(*const c_char, *const c_char)->i32
     ) -> Result<!, io::Error> {
         use crate::sys::{self, cvt_r};
 	eprintln!("process_unix:178: pid {} in do_exec", sys::os::getpid());
@@ -293,15 +321,21 @@ impl Command {
             _reset = Some(Reset(*sys::os::environ()));
             *sys::os::environ() = envp.as_ptr();
         }
-	eprintln!("process_unix:255: pid {} will do_exec of /usr/bin/env with {:?} and {:?}", sys::os::getpid(), self.get_program(), self.get_argv());
-        // if !under_sb2 {
-        //     libc::execvp(self.get_program().as_ptr(), self.get_argv().as_ptr());
-        // } else {
-        (real_execvp)("/usr/bin/env\0".as_ptr() as *const c_char,
-		      self.get_argv().as_ptr() as *const c_char);
-        // }
-	eprintln!("process_unix:257: pid {} do_exec of {:?} failed last_os_error={:?}", sys::os::getpid(), self.get_program(), io::Error::last_os_error());
-        Err(io::Error::last_os_error())
+	match self.execvp {
+	    Some(real_execvp) => {
+		eprintln!("process_unix:255: pid {} will do_exec using real_execvp with {:?} and {:?}", sys::os::getpid(), self.get_program(), self.get_argv());
+		(real_execvp)(self.get_program().as_ptr() as *const c_char,
+			      self.get_argv().as_ptr() as *const c_char)
+	    },
+	    None => {
+		eprintln!("process_unix:255: pid {} will do_exec using libc::execvp with {:?} and {:?}", sys::os::getpid(), self.get_program(), self.get_argv());
+		libc::execvp(self.get_program().as_ptr() as *const c_char,
+			     self.get_argv().as_ptr())
+	    }
+	};
+	let e = io::Error::last_os_error();
+	eprintln!("process_unix:257: pid {} do_exec of {:?} failed last_os_error={:?}", sys::os::getpid(), self.get_program(), e);
+        Err(e)
     }
 
     #[cfg(not(any(

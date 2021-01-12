@@ -71,10 +71,12 @@ pub struct Command {
     // located. Whenever we add a key we update it in place if it's already
     // present, and whenever we remove a key we update the locations of all
     // other keys.
-    program: CString,
+    pub(crate) program: CString,
     args: Vec<CString>,
     argv: Argv,
     env: CommandEnv,
+//    execvp_shim: String,
+    pub(crate) execvp: Option<ExecvpFn>,
 
     cwd: Option<CString>,
     uid: Option<uid_t>,
@@ -86,6 +88,8 @@ pub struct Command {
     stderr: Option<Stdio>,
 }
 
+pub(crate) type ExecvpFn = fn(*const c_char, *const c_char)->i32;
+    
 // Create a new type for argv, so that we can make it `Send`
 struct Argv(Vec<*const c_char>);
 
@@ -137,11 +141,14 @@ impl Command {
     pub fn new(program: &OsStr) -> Command {
         let mut saw_nul = false;
         let program = os2c(program, &mut saw_nul);
+//	let shim = String::from("/usr/bin/env\0");
         Command {
             argv: Argv(vec![program.as_ptr(), ptr::null()]),
             args: vec![program.clone()],
             program,
             env: Default::default(),
+//	    execvp_shim: shim,
+	    execvp: None,
             cwd: None,
             uid: None,
             gid: None,
