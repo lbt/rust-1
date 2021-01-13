@@ -75,7 +75,6 @@ pub struct Command {
     args: Vec<CString>,
     argv: Argv,
     env: CommandEnv,
-//    execvp_shim: String,
     pub(crate) execvp: Option<ExecvpFn>,
 
     cwd: Option<CString>,
@@ -141,18 +140,16 @@ impl Command {
     pub fn new(program: &OsStr) -> Command {
         let mut saw_nul = false;
         let program = os2c(program, &mut saw_nul);
-//	let shim = String::from("/usr/bin/env\0");
         Command {
             argv: Argv(vec![program.as_ptr(), ptr::null()]),
             args: vec![program.clone()],
-            program,
+            program: program,
             env: Default::default(),
-//	    execvp_shim: shim,
 	    execvp: None,
             cwd: None,
             uid: None,
             gid: None,
-            saw_nul,
+            saw_nul: saw_nul,
             closures: Vec::new(),
             stdin: None,
             stdout: None,

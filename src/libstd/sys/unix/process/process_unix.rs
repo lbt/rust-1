@@ -52,17 +52,17 @@ impl Command {
 	match getenv(&OsString::from("RUST_EXEC_SHIM"))? {
 	    Some(var) => { // handle "/usr/bin/env <arg> <arg>"
 		let var = var.into_string().expect("Valid string");
-		// Convert to a Vec of C \0 terminated strings
-//		let mut words: Vec<&CStr> = var.split(" ").map(|&s|{CString::new(s.as_bytes()).unwrap()}).collect();
 		let words: Vec<&str> = var.as_str().split(" ").collect();
 		for w in words.iter().rev() {
+		    // Convert to a C \0 terminated string
 		    let cw = CString::new(w.as_bytes()).unwrap();
 		    self.set_argv0(cw.as_ptr());
 		    self.program = cw;
-		    eprintln!("process_unix:54: pid {} handling RUST_EXEC_SHIM arg: {:?}", sys::os::getpid(), cw);
+		    eprintln!("process_unix:54: pid {} handling RUST_EXEC_SHIM arg: {:?}", sys::os::getpid(), self.program);
 
 		};
-		// Now prog and arg0 = /usr/bin/env
+		// At this point self.program is the SHIM. argv[0] is
+		// the SHIM and argv[>0] is the real program.
 	    },
 	    None => {} // Business as usual
 	};
@@ -321,14 +321,17 @@ impl Command {
             _reset = Some(Reset(*sys::os::environ()));
             *sys::os::environ() = envp.as_ptr();
         }
+	eprint!("process_unix:324: pid {} will do_exec with {:?} args: ", sys::os::getpid(), self.get_program());
+	for a in self.get_argv() { eprintln!("{:?} ", a); };
+	eprintln!("");
 	match self.execvp {
 	    Some(real_execvp) => {
-		eprintln!("process_unix:255: pid {} will do_exec using real_execvp with {:?} and {:?}", sys::os::getpid(), self.get_program(), self.get_argv());
+		eprintln!("process_unix:327: pid {} using real_execvp", sys::os::getpid());
 		(real_execvp)(self.get_program().as_ptr(),
 			      self.get_argv().as_ptr())
 	    },
 	    None => {
-		eprintln!("process_unix:255: pid {} will do_exec using libc::execvp with {:?} and {:?}", sys::os::getpid(), self.get_program(), self.get_argv());
+		eprintln!("process_unix:332: pid {} using libc::execvp", sys::os::getpid());
 		libc::execvp(self.get_program().as_ptr(),
 			     self.get_argv().as_ptr())
 	    }
