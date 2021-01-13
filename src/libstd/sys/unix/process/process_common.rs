@@ -140,9 +140,10 @@ impl Command {
     pub fn new(program: &OsStr) -> Command {
         let mut saw_nul = false;
         let program = os2c(program, &mut saw_nul);
+        let arg0 = program.clone();
         Command {
-            argv: Argv(vec![program.as_ptr(), ptr::null()]),
-            args: vec![program.clone()],
+            argv: Argv(vec![arg0.as_ptr(), ptr::null()]),
+            args: vec![arg0],
             program: program,
             env: Default::default(),
 	    execvp: None,
