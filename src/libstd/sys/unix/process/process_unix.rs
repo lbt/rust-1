@@ -57,9 +57,9 @@ impl Command {
 		let words: Vec<&str> = var.as_str().split(" ").collect();
 		for w in words.iter().rev() {
 		    let cw = CString::new(w.as_bytes()).unwrap();
-		    self.set_argv0(cw.as_ptr() as *const c_char);
+		    self.set_argv0(cw.as_ptr());
 		    self.program = cw;
-		    eprintln!("process_unix:54: pid {} handling RUST_EXEC_SHIM arg: {}", sys::os::getpid(), w);
+		    eprintln!("process_unix:54: pid {} handling RUST_EXEC_SHIM arg: {:?}", sys::os::getpid(), cw);
 
 		};
 		// Now prog and arg0 = /usr/bin/env
@@ -324,12 +324,12 @@ impl Command {
 	match self.execvp {
 	    Some(real_execvp) => {
 		eprintln!("process_unix:255: pid {} will do_exec using real_execvp with {:?} and {:?}", sys::os::getpid(), self.get_program(), self.get_argv());
-		(real_execvp)(self.get_program().as_ptr() as *const c_char,
-			      self.get_argv().as_ptr() as *const c_char)
+		(real_execvp)(self.get_program().as_ptr(),
+			      self.get_argv().as_ptr())
 	    },
 	    None => {
 		eprintln!("process_unix:255: pid {} will do_exec using libc::execvp with {:?} and {:?}", sys::os::getpid(), self.get_program(), self.get_argv());
-		libc::execvp(self.get_program().as_ptr() as *const c_char,
+		libc::execvp(self.get_program().as_ptr(),
 			     self.get_argv().as_ptr())
 	    }
 	};

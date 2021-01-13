@@ -88,7 +88,7 @@ pub struct Command {
     stderr: Option<Stdio>,
 }
 
-pub(crate) type ExecvpFn = fn(*const c_char, *const c_char)->i32;
+pub(crate) type ExecvpFn = fn(*const c_char, *const *const c_char)->i32;
     
 // Create a new type for argv, so that we can make it `Send`
 struct Argv(Vec<*const c_char>);
