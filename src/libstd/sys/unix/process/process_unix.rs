@@ -5,9 +5,8 @@ use crate::sys;
 use crate::sys::cvt;
 use crate::sys::process::process_common::*;
 use crate::intrinsics::transmute;
-use crate::ffi::{OsString, CString};
+use crate::ffi::{OsString};
 use sys::os::getenv;
-
 use libc::{c_int, gid_t, pid_t, uid_t, dlsym, c_char};
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -51,15 +50,11 @@ impl Command {
 	
 	match getenv(&OsString::from("RUST_EXEC_SHIM"))? {
 	    Some(var) => { // handle "/usr/bin/env <arg> <arg>"
-		let var = var.into_string().expect("Valid string");
+		let var = var.into_string().expect("Valid string"); // so we can .split()
 		let words: Vec<&str> = var.as_str().split(" ").collect();
 		for w in words.iter().rev() {
-		    // Convert to a C \0 terminated string
-		    let cw = CString::new(w.as_bytes()).unwrap();
-		    self.set_argv0(cw.as_ptr());
-		    self.program = cw;
-		    eprintln!("process_unix:54: pid {} handling RUST_EXEC_SHIM arg: {:?}", sys::os::getpid(), self.program);
-
+		    eprintln!("process_unix:54: pid {} handling RUST_EXEC_SHIM arg: {:?}", sys::os::getpid(), w);
+		    self.insert_program(w.to_string());
 		};
 		// At this point self.program is the SHIM. argv[0] is
 		// the SHIM and argv[>0] is the real program.
@@ -166,10 +161,6 @@ impl Command {
         if self.saw_nul() {
             return io::Error::new(ErrorKind::InvalidInput, "nul byte found in provided data");
         }
-
-	// Can't do this in do_exec as spawn calls it after forking.
-	self.set_argv0("--\0".as_ptr() as *const c_char);
-	self.set_argv0("/usr/bin/env\0".as_ptr() as *const c_char);
 
         match self.setup_io(default, true) {
             Ok((_, theirs)) => {
@@ -321,9 +312,7 @@ impl Command {
             _reset = Some(Reset(*sys::os::environ()));
             *sys::os::environ() = envp.as_ptr();
         }
-	eprint!("process_unix:324: pid {} will do_exec with {:?} args: ", sys::os::getpid(), self.get_program());
-	for a in self.get_argv() { eprintln!("{:?} ", a); };
-	eprintln!("");
+	eprint!("process_unix:324: pid {} will do_exec with {:?}", sys::os::getpid(), self);
 	match self.execvp {
 	    Some(real_execvp) => {
 		eprintln!("process_unix:327: pid {} using real_execvp", sys::os::getpid());

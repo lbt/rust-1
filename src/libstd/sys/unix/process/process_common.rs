@@ -96,11 +96,11 @@ struct Argv(Vec<*const c_char>);
 unsafe impl Send for Argv {}
 
 // This allows Command to push program to the start of env's arg list
-impl Argv {
-    pub fn insert_at_start(&mut self, v: *const c_char) {
-	self.0.insert(0, v);
-    }
-}
+// impl Argv {
+//     pub fn insert_at_start(&mut self, v: *const c_char) {
+// 	self.0.insert(0, v);
+//     }
+// }
 
 // passed back to std::process with the pipes connected to the child, if any
 // were requested
@@ -159,8 +159,12 @@ impl Command {
 
     // This allows process_unix::{spawn, exec} to push program to the
     // start of /usr/bin/env's arg list
-    pub fn set_argv0(&mut self, v: *const c_char) {
-	self.argv.insert_at_start(v);
+    pub fn insert_program(&mut self, arg: String) {
+	let arg = OsString::from(arg);
+        let arg = os2c(&arg, &mut self.saw_nul);
+	self.program = arg.clone();
+	self.argv.0.insert(0, arg.as_ptr());
+        self.args.insert(0, arg);
     }
 
     pub fn set_arg_0(&mut self, arg: &OsStr) {
