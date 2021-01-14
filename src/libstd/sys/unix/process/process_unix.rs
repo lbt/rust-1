@@ -63,6 +63,7 @@ impl Command {
 	};
 	match getenv(&OsString::from("RUST_EXECVP_REAL"))? {
 	    Some(_var) => unsafe {
+		eprintln!("process_unix:66: pid {} handling RUST_EXECVP_REAL", sys::os::getpid());
 		let real_execvp_p = dlsym(libc::RTLD_NEXT,
 		      "execvp\0".as_ptr() as *const c_char) as *const ();
 		self.execvp = Some(
@@ -72,6 +73,7 @@ impl Command {
 	};
 	match getenv(&OsString::from("RUST_DUP2_REAL"))? {
 	    Some(_var) => unsafe {
+		eprintln!("process_unix:76: pid {} handling RUST_DUP2_REAL", sys::os::getpid());
 		let real_dup2_p = dlsym(libc::RTLD_NEXT,
 		      "dup2\0".as_ptr() as *const c_char) as *const ();
 		self.dup2 = Some(
@@ -81,6 +83,7 @@ impl Command {
 	};
 	match getenv(&OsString::from("RUST_CHDIR_REAL"))? {
 	    Some(_var) => unsafe {
+		eprintln!("process_unix:86: pid {} handling RUST_CHDIR_REAL", sys::os::getpid());
 		let real_chdir_p = dlsym(libc::RTLD_NEXT,
 		      "chdir\0".as_ptr() as *const c_char) as *const ();
 		self.chdir = Some(
@@ -198,11 +201,11 @@ impl Command {
     fn unwrap_dup2(&mut self, src: c_int, dst: c_int) -> c_int {
 	match self.dup2 {
 	    Some(real_dup2) => {
-		eprintln!("process_unix:201: pid {} using libc dup2", sys::os::getpid());
+//		eprintln!("process_unix:201: pid {} using libc dup2", sys::os::getpid());
 		(real_dup2)(src, dst)
 	    },
 	    None => {
-		eprintln!("process_unix:205: pid {} using sb2 dup2", sys::os::getpid());
+//		eprintln!("process_unix:205: pid {} using sb2 dup2", sys::os::getpid());
 		unsafe { libc::dup2(src, dst) }
 	    }
 	}
@@ -210,11 +213,11 @@ impl Command {
     fn unwrap_chdir(&self, dir: *const c_char) -> c_int {
 	match self.chdir {
 	    Some(real_chdir) => {
-		eprintln!("process_unix:327: pid {} using real_execvp", sys::os::getpid());
+//		eprintln!("process_unix:327: pid {} using real_chdir", sys::os::getpid());
 		(real_chdir)(dir)
 	    },
 	    None => {
-		eprintln!("process_unix:332: pid {} using libc::execvp", sys::os::getpid());
+//		eprintln!("process_unix:332: pid {} using libc::chdir", sys::os::getpid());
 		unsafe { libc::chdir(dir) }
 	    }
 	}
@@ -255,19 +258,19 @@ impl Command {
         maybe_envp: Option<&CStringArray>,
     ) -> Result<!, io::Error> {
         use crate::sys::{self, cvt_r};
-	eprintln!("process_unix:178: pid {} in do_exec", sys::os::getpid());
+//	eprintln!("process_unix:178: pid {} in do_exec", sys::os::getpid());
         if let Some(fd) = stdio.stdin.fd() {
             cvt_r(|| self.unwrap_dup2(fd, libc::STDIN_FILENO))?;
         }
-	eprintln!("process_unix:178: pid {} done dup2(STDIN)", sys::os::getpid());
+//	eprintln!("process_unix:178: pid {} done dup2(STDIN)", sys::os::getpid());
         if let Some(fd) = stdio.stdout.fd() {
             cvt_r(|| self.unwrap_dup2(fd, libc::STDOUT_FILENO))?;
         }
-	eprintln!("process_unix:178: pid {} done dup2(STDOUT)", sys::os::getpid());
+//	eprintln!("process_unix:178: pid {} done dup2(STDOUT)", sys::os::getpid());
         if let Some(fd) = stdio.stderr.fd() {
             cvt_r(|| self.unwrap_dup2(fd, libc::STDERR_FILENO))?;
         }
-	eprintln!("process_unix:178: pid {} done dup2(STDERR)", sys::os::getpid());
+//	eprintln!("process_unix:178: pid {} done dup2(STDERR)", sys::os::getpid());
 
         #[cfg(not(target_os = "l4re"))]
         {
@@ -288,11 +291,11 @@ impl Command {
                 cvt(libc::setuid(u as uid_t))?;
             }
         }
-	eprintln!("process_unix:178: pid {} done setuid", sys::os::getpid());
+//	eprintln!("process_unix:178: pid {} done setuid", sys::os::getpid());
         if let Some(ref cwd) = *self.get_cwd() {
             cvt(self.unwrap_chdir(cwd.as_ptr()))?;
         }
-	eprintln!("process_unix:178: pid {} done chdir", sys::os::getpid());
+//	eprintln!("process_unix:178: pid {} done chdir", sys::os::getpid());
 
         // emscripten has no signal support.
         #[cfg(not(target_os = "emscripten"))]
@@ -313,12 +316,12 @@ impl Command {
                 return Err(io::Error::last_os_error());
             }
         }
-	eprintln!("process_unix:178: pid {} done signal", sys::os::getpid());
+//	eprintln!("process_unix:178: pid {} done signal", sys::os::getpid());
 
         for callback in self.get_closures().iter_mut() {
             callback()?;
         }
-	eprintln!("process_unix:178: pid {} done callbacks", sys::os::getpid());
+//	eprintln!("process_unix:178: pid {} done callbacks", sys::os::getpid());
 
         // Although we're performing an exec here we may also return with an
         // error from this function (without actually exec'ing) in which case we
@@ -340,21 +343,21 @@ impl Command {
             _reset = Some(Reset(*sys::os::environ()));
             *sys::os::environ() = envp.as_ptr();
         }
-	eprint!("process_unix:324: pid {} will do_exec with {:?}", sys::os::getpid(), self);
+//	eprint!("process_unix:324: pid {} will do_exec with {:?}", sys::os::getpid(), self);
 	match self.execvp {
 	    Some(real_execvp) => {
-		eprintln!("process_unix:327: pid {} using real_execvp", sys::os::getpid());
+//		eprintln!("process_unix:327: pid {} using real_execvp", sys::os::getpid());
 		(real_execvp)(self.get_program().as_ptr(),
 			      self.get_argv().as_ptr())
 	    },
 	    None => {
-		eprintln!("process_unix:332: pid {} using libc::execvp", sys::os::getpid());
+//		eprintln!("process_unix:332: pid {} using libc::execvp", sys::os::getpid());
 		libc::execvp(self.get_program().as_ptr(),
 			     self.get_argv().as_ptr())
 	    }
 	};
 	let e = io::Error::last_os_error();
-	eprintln!("process_unix:257: pid {} do_exec of {:?} failed last_os_error={:?}", sys::os::getpid(), self.get_program(), e);
+//	eprintln!("process_unix:257: pid {} do_exec of {:?} failed last_os_error={:?}", sys::os::getpid(), self.get_program(), e);
         Err(e)
     }
 
@@ -408,11 +411,9 @@ impl Command {
         {
             if let Some(version) = sys::os::glibc_version() {
                 if version < (2, 24) {
-		    eprintln!("process_unix:304: posix_spawn glibc too old");
                     return Ok(None);
                 }
             } else {
-		eprintln!("process_unix:308: posix_spawn no glibc version");
                 return Ok(None);
             }
         }
@@ -431,7 +432,6 @@ impl Command {
             Some(cwd) => match posix_spawn_file_actions_addchdir_np.get() {
                 Some(f) => Some((f, cwd)),
                 None => {
-		    eprintln!("process_unix:327: posix_spawn chdir issue");
 		    return Ok(None)
 		},
             },
