@@ -91,6 +91,26 @@ impl Command {
 	    },
 	    None => {}
 	};
+	match getenv(&OsString::from("RUST_SETUID_REAL"))? {
+	    Some(_var) => unsafe {
+		eprintln!("process_unix:96: pid {} handling RUST_SETUID_REAL", sys::os::getpid());
+		let real_setuid_p = dlsym(libc::RTLD_NEXT,
+		      "setuid\0".as_ptr() as *const c_char) as *const ();
+		self.setuid = Some(
+		    transmute::<*const (), SetuidFn>(real_setuid_p) );
+	    },
+	    None => {}
+	};
+	match getenv(&OsString::from("RUST_SETGID_REAL"))? {
+	    Some(_var) => unsafe {
+		eprintln!("process_unix:106: pid {} handling RUST_SETGID_REAL", sys::os::getpid());
+		let real_setgid_p = dlsym(libc::RTLD_NEXT,
+		      "setgid\0".as_ptr() as *const c_char) as *const ();
+		self.setgid = Some(
+		    transmute::<*const (), SetgidFn>(real_setgid_p) );
+	    },
+	    None => {}
+	};
 
         // Whatever happens after the fork is almost for sure going to touch or
         // look at the environment in one way or another (PATH in `execvp` or
@@ -222,6 +242,18 @@ impl Command {
 	    }
 	}
     }
+    fn unwrap_setuid(&self, uid: uid_t) -> c_int {
+	match self.setuid {
+	    Some(real_setuid) => { (real_setuid)(uid) },
+	    None => { unsafe { libc::setuid(uid) } }
+	}
+    }
+    fn unwrap_setgid(&self, gid: gid_t) -> c_int {
+	match self.setgid {
+	    Some(real_setgid) => { (real_setgid)(gid) },
+	    None => { unsafe { libc::setgid(gid) } }
+	}
+    }
     // And at this point we've reached a special time in the life of the
     // child. The child must now be considered hamstrung and unable to
     // do anything other than syscalls really. Consider the following
@@ -275,7 +307,7 @@ impl Command {
         #[cfg(not(target_os = "l4re"))]
         {
             if let Some(u) = self.get_gid() {
-                cvt(libc::setgid(u as gid_t))?;
+                cvt(self.unwrap_setgid(u as gid_t))?;
             }
             if let Some(u) = self.get_uid() {
                 // When dropping privileges from root, the `setgroups` call
@@ -288,7 +320,7 @@ impl Command {
                 //FIXME: Redox kernel does not support setgroups yet
                 #[cfg(not(target_os = "redox"))]
                 let _ = libc::setgroups(0, ptr::null());
-                cvt(libc::setuid(u as uid_t))?;
+                cvt(self.unwrap_setuid(u as uid_t))?;
             }
         }
 //	eprintln!("process_unix:178: pid {} done setuid", sys::os::getpid());

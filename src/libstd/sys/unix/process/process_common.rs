@@ -78,6 +78,8 @@ pub struct Command {
     pub(crate) execvp: Option<ExecvpFn>,
     pub(crate) dup2: Option<Dup2Fn>,
     pub(crate) chdir: Option<ChdirFn>,
+    pub(crate) setuid: Option<SetuidFn>,
+    pub(crate) setgid: Option<SetgidFn>,
 
     cwd: Option<CString>,
     uid: Option<uid_t>,
@@ -92,6 +94,10 @@ pub struct Command {
 pub(crate) type ExecvpFn = fn(*const c_char, *const *const c_char)->c_int;
 pub(crate) type Dup2Fn = fn(c_int, c_int)->c_int;
 pub(crate) type ChdirFn = fn(*const c_char)->c_int;
+pub(crate) type SetuidFn = fn(uid_t)->c_int;
+pub(crate) type SetgidFn = fn(gid_t)->c_int;
+//pub(crate) type GetgidFn = fn()->gid_t;
+//pub(crate) type GetuidFn = fn(*const c_char)->c_int;
     
 // Create a new type for argv, so that we can make it `Send`
 struct Argv(Vec<*const c_char>);
@@ -153,6 +159,8 @@ impl Command {
 	    execvp: None,
 	    dup2: None,
 	    chdir: None,
+	    setuid: None,
+	    setgid: None,
             cwd: None,
             uid: None,
             gid: None,
