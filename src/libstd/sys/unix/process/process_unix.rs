@@ -44,10 +44,10 @@ impl Command {
 
 	// We do this here and pass so do_exec() so any malloc's are
 	// pre-fork()
-	
+
 	// At this point self.program is the real program. argv[0] is
 	// the real program too.
-	
+
 	match getenv(&OsString::from("RUST_EXEC_SHIM"))? {
 	    Some(var) => { // handle "/usr/bin/env <arg> <arg>"
 		let var = var.into_string().expect("Valid string"); // so we can .split()
@@ -70,7 +70,25 @@ impl Command {
 	    },
 	    None => {}
 	};
-    
+	match getenv(&OsString::from("RUST_DUP2_REAL"))? {
+	    Some(_var) => unsafe {
+		let real_dup2_p = dlsym(libc::RTLD_NEXT,
+		      "dup2\0".as_ptr() as *const c_char) as *const ();
+		self.dup2 = Some(
+		    transmute::<*const (), Dup2Fn>(real_dup2_p) );
+	    },
+	    None => {}
+	};
+	match getenv(&OsString::from("RUST_CHDIR_REAL"))? {
+	    Some(_var) => unsafe {
+		let real_chdir_p = dlsym(libc::RTLD_NEXT,
+		      "chdir\0".as_ptr() as *const c_char) as *const ();
+		self.chdir = Some(
+		    transmute::<*const (), ChdirFn>(real_chdir_p) );
+	    },
+	    None => {}
+	};
+
         // Whatever happens after the fork is almost for sure going to touch or
         // look at the environment in one way or another (PATH in `execvp` or
         // accessing the `environ` pointer ourselves). Make sure no other thread
@@ -177,21 +195,31 @@ impl Command {
             Err(e) => e,
         }
     }
-    // see .../libstd/sys/unix/os.rs#512
-    // fn getenv(k: String) -> Result<String, Error> {
-    // 	let k = CString::new(k.as_bytes())?;
-    // 	unsafe {
-    //         let _guard = env_lock();
-    //         let s = libc::getenv(k.as_ptr()) as *const libc::c_char;
-    //         let ret = if s.is_null() {
-    // 		None
-    //         } else {
-    // 		Some(OsStringExt::from_vec(CStr::from_ptr(s).to_bytes().to_vec()))
-    //         };
-    //         Ok(ret)
-    // 	}
-    // }
-    // and at this point we've reached a special time in the life of the
+    fn unwrap_dup2(&mut self, src: c_int, dst: c_int) -> c_int {
+	match self.dup2 {
+	    Some(real_dup2) => {
+		eprintln!("process_unix:201: pid {} using libc dup2", sys::os::getpid());
+		(real_dup2)(src, dst)
+	    },
+	    None => {
+		eprintln!("process_unix:205: pid {} using sb2 dup2", sys::os::getpid());
+		unsafe { libc::dup2(src, dst) }
+	    }
+	}
+    }
+    fn unwrap_chdir(&self, dir: *const c_char) -> c_int {
+	match self.chdir {
+	    Some(real_chdir) => {
+		eprintln!("process_unix:327: pid {} using real_execvp", sys::os::getpid());
+		(real_chdir)(dir)
+	    },
+	    None => {
+		eprintln!("process_unix:332: pid {} using libc::execvp", sys::os::getpid());
+		unsafe { libc::chdir(dir) }
+	    }
+	}
+    }
+    // And at this point we've reached a special time in the life of the
     // child. The child must now be considered hamstrung and unable to
     // do anything other than syscalls really. Consider the following
     // scenario:
@@ -229,15 +257,15 @@ impl Command {
         use crate::sys::{self, cvt_r};
 	eprintln!("process_unix:178: pid {} in do_exec", sys::os::getpid());
         if let Some(fd) = stdio.stdin.fd() {
-            cvt_r(|| libc::dup2(fd, libc::STDIN_FILENO))?;
+            cvt_r(|| self.unwrap_dup2(fd, libc::STDIN_FILENO))?;
         }
 	eprintln!("process_unix:178: pid {} done dup2(STDIN)", sys::os::getpid());
         if let Some(fd) = stdio.stdout.fd() {
-            cvt_r(|| libc::dup2(fd, libc::STDOUT_FILENO))?;
+            cvt_r(|| self.unwrap_dup2(fd, libc::STDOUT_FILENO))?;
         }
 	eprintln!("process_unix:178: pid {} done dup2(STDOUT)", sys::os::getpid());
         if let Some(fd) = stdio.stderr.fd() {
-            cvt_r(|| libc::dup2(fd, libc::STDERR_FILENO))?;
+            cvt_r(|| self.unwrap_dup2(fd, libc::STDERR_FILENO))?;
         }
 	eprintln!("process_unix:178: pid {} done dup2(STDERR)", sys::os::getpid());
 
@@ -262,7 +290,7 @@ impl Command {
         }
 	eprintln!("process_unix:178: pid {} done setuid", sys::os::getpid());
         if let Some(ref cwd) = *self.get_cwd() {
-            cvt(libc::chdir(cwd.as_ptr()))?;
+            cvt(self.unwrap_chdir(cwd.as_ptr()))?;
         }
 	eprintln!("process_unix:178: pid {} done chdir", sys::os::getpid());
 
@@ -360,12 +388,18 @@ impl Command {
         use crate::sys;
 
 	eprintln!("process_unix:289: in real posix_spawn");
+	let skip_spawnvp :bool = match getenv(&OsString::from("RUST_NO_SPAWNVP"))? {
+	    Some(_var) => true,
+	    None => false
+	};
+
         if self.get_gid().is_some()
             || self.get_uid().is_some()
             || self.env_saw_path()
             || !self.get_closures().is_empty()
+	    || skip_spawnvp
         {
-	    eprintln!("process_unix:295: pid {} posix_spawn nope 1 gid:{} uid:{} env_saw_path:{} closures:{}", sys::os::getpid(), self.get_gid().is_some(), self.get_uid().is_some(), self.env_saw_path(), !self.get_closures().is_empty());
+	    eprintln!("process_unix:295: pid {} posix_spawn NOPE gid:{} uid:{} env_saw_path:{} closures:{} skip_spawnvp:{}", sys::os::getpid(), self.get_gid().is_some(), self.get_uid().is_some(), self.env_saw_path(), !self.get_closures().is_empty(), skip_spawnvp);
             return Ok(None);
         }
 
