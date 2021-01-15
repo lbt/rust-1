@@ -4,10 +4,11 @@ use crate::ptr;
 use crate::sys;
 use crate::sys::cvt;
 use crate::sys::process::process_common::*;
+
+use libc::{c_int, gid_t, pid_t, uid_t, dlsym, c_char};
 use crate::intrinsics::transmute;
 use crate::ffi::{OsString};
 use sys::os::getenv;
-use libc::{c_int, gid_t, pid_t, uid_t, dlsym, c_char};
 
 ////////////////////////////////////////////////////////////////////////////////
 // Command
@@ -19,7 +20,6 @@ impl Command {
         default: Stdio,
         needs_stdin: bool,
     ) -> io::Result<(Process, StdioPipes)> {
-	eprintln!("process_unix:20: pid {} Entering spawn: {:?}", sys::os::getpid(), self.get_program());
         const CLOEXEC_MSG_FOOTER: &[u8] = b"NOEX";
 
         let envp = self.capture_env();
@@ -46,14 +46,13 @@ impl Command {
 	// pre-fork()
 
 	// At this point self.program is the real program. argv[0] is
-	// the real program too.
+	// now a clone() of program.
 
 	match getenv(&OsString::from("RUST_EXEC_SHIM"))? {
 	    Some(var) => { // handle "/usr/bin/env <arg> <arg>"
 		let var = var.into_string().expect("Valid string"); // so we can .split()
 		let words: Vec<&str> = var.as_str().split(" ").collect();
 		for w in words.iter().rev() {
-		    eprintln!("process_unix:54: pid {} handling RUST_EXEC_SHIM arg: {:?}", sys::os::getpid(), w);
 		    self.insert_program(w.to_string());
 		};
 		// At this point self.program is the SHIM. argv[0] is
@@ -63,7 +62,6 @@ impl Command {
 	};
 	match getenv(&OsString::from("RUST_EXECVP_REAL"))? {
 	    Some(_var) => unsafe {
-		eprintln!("process_unix:66: pid {} handling RUST_EXECVP_REAL", sys::os::getpid());
 		let real_execvp_p = dlsym(libc::RTLD_NEXT,
 		      "execvp\0".as_ptr() as *const c_char) as *const ();
 		self.execvp = Some(
@@ -71,39 +69,20 @@ impl Command {
 	    },
 	    None => {}
 	};
-	match getenv(&OsString::from("RUST_DUP2_REAL"))? {
+	match getenv(&OsString::from("RUST_FN_REAL"))? {
 	    Some(_var) => unsafe {
-		eprintln!("process_unix:76: pid {} handling RUST_DUP2_REAL", sys::os::getpid());
 		let real_dup2_p = dlsym(libc::RTLD_NEXT,
 		      "dup2\0".as_ptr() as *const c_char) as *const ();
 		self.dup2 = Some(
 		    transmute::<*const (), Dup2Fn>(real_dup2_p) );
-	    },
-	    None => {}
-	};
-	match getenv(&OsString::from("RUST_CHDIR_REAL"))? {
-	    Some(_var) => unsafe {
-		eprintln!("process_unix:86: pid {} handling RUST_CHDIR_REAL", sys::os::getpid());
 		let real_chdir_p = dlsym(libc::RTLD_NEXT,
 		      "chdir\0".as_ptr() as *const c_char) as *const ();
 		self.chdir = Some(
 		    transmute::<*const (), ChdirFn>(real_chdir_p) );
-	    },
-	    None => {}
-	};
-	match getenv(&OsString::from("RUST_SETUID_REAL"))? {
-	    Some(_var) => unsafe {
-		eprintln!("process_unix:96: pid {} handling RUST_SETUID_REAL", sys::os::getpid());
 		let real_setuid_p = dlsym(libc::RTLD_NEXT,
 		      "setuid\0".as_ptr() as *const c_char) as *const ();
 		self.setuid = Some(
 		    transmute::<*const (), SetuidFn>(real_setuid_p) );
-	    },
-	    None => {}
-	};
-	match getenv(&OsString::from("RUST_SETGID_REAL"))? {
-	    Some(_var) => unsafe {
-		eprintln!("process_unix:106: pid {} handling RUST_SETGID_REAL", sys::os::getpid());
 		let real_setgid_p = dlsym(libc::RTLD_NEXT,
 		      "setgid\0".as_ptr() as *const c_char) as *const ();
 		self.setgid = Some(
@@ -122,7 +101,6 @@ impl Command {
         // in its own process.
         let result = unsafe {
             let _env_lock = sys::os::env_lock();
-	    eprintln!("process_unix:48: pid {} About to fork", sys::os::getpid());
             cvt(libc::fork())?
         };
 
@@ -148,10 +126,7 @@ impl Command {
                     assert!(output.write(&bytes).is_ok());
                     libc::_exit(1)
                 }
-                n => {
-		    eprintln!("process_unix:74: pid {} forked pid {} as child", sys::os::getpid(), n);
-		    n
-		},
+                n => n,
             }
         };
 
@@ -220,26 +195,14 @@ impl Command {
     }
     fn unwrap_dup2(&mut self, src: c_int, dst: c_int) -> c_int {
 	match self.dup2 {
-	    Some(real_dup2) => {
-//		eprintln!("process_unix:201: pid {} using libc dup2", sys::os::getpid());
-		(real_dup2)(src, dst)
-	    },
-	    None => {
-//		eprintln!("process_unix:205: pid {} using sb2 dup2", sys::os::getpid());
-		unsafe { libc::dup2(src, dst) }
-	    }
+	    Some(real_dup2) => { (real_dup2)(src, dst) },
+	    None => { unsafe { libc::dup2(src, dst) } }
 	}
     }
     fn unwrap_chdir(&self, dir: *const c_char) -> c_int {
 	match self.chdir {
-	    Some(real_chdir) => {
-//		eprintln!("process_unix:327: pid {} using real_chdir", sys::os::getpid());
-		(real_chdir)(dir)
-	    },
-	    None => {
-//		eprintln!("process_unix:332: pid {} using libc::chdir", sys::os::getpid());
-		unsafe { libc::chdir(dir) }
-	    }
+	    Some(real_chdir) => { (real_chdir)(dir) },
+	    None => { unsafe { libc::chdir(dir) } }
 	}
     }
     fn unwrap_setuid(&self, uid: uid_t) -> c_int {
@@ -290,19 +253,16 @@ impl Command {
         maybe_envp: Option<&CStringArray>,
     ) -> Result<!, io::Error> {
         use crate::sys::{self, cvt_r};
-//	eprintln!("process_unix:178: pid {} in do_exec", sys::os::getpid());
+
         if let Some(fd) = stdio.stdin.fd() {
             cvt_r(|| self.unwrap_dup2(fd, libc::STDIN_FILENO))?;
         }
-//	eprintln!("process_unix:178: pid {} done dup2(STDIN)", sys::os::getpid());
         if let Some(fd) = stdio.stdout.fd() {
             cvt_r(|| self.unwrap_dup2(fd, libc::STDOUT_FILENO))?;
         }
-//	eprintln!("process_unix:178: pid {} done dup2(STDOUT)", sys::os::getpid());
         if let Some(fd) = stdio.stderr.fd() {
             cvt_r(|| self.unwrap_dup2(fd, libc::STDERR_FILENO))?;
         }
-//	eprintln!("process_unix:178: pid {} done dup2(STDERR)", sys::os::getpid());
 
         #[cfg(not(target_os = "l4re"))]
         {
@@ -323,11 +283,9 @@ impl Command {
                 cvt(self.unwrap_setuid(u as uid_t))?;
             }
         }
-//	eprintln!("process_unix:178: pid {} done setuid", sys::os::getpid());
         if let Some(ref cwd) = *self.get_cwd() {
             cvt(self.unwrap_chdir(cwd.as_ptr()))?;
         }
-//	eprintln!("process_unix:178: pid {} done chdir", sys::os::getpid());
 
         // emscripten has no signal support.
         #[cfg(not(target_os = "emscripten"))]
@@ -348,12 +306,10 @@ impl Command {
                 return Err(io::Error::last_os_error());
             }
         }
-//	eprintln!("process_unix:178: pid {} done signal", sys::os::getpid());
 
         for callback in self.get_closures().iter_mut() {
             callback()?;
         }
-//	eprintln!("process_unix:178: pid {} done callbacks", sys::os::getpid());
 
         // Although we're performing an exec here we may also return with an
         // error from this function (without actually exec'ing) in which case we
@@ -375,22 +331,17 @@ impl Command {
             _reset = Some(Reset(*sys::os::environ()));
             *sys::os::environ() = envp.as_ptr();
         }
-//	eprint!("process_unix:324: pid {} will do_exec with {:?}", sys::os::getpid(), self);
 	match self.execvp {
 	    Some(real_execvp) => {
-//		eprintln!("process_unix:327: pid {} using real_execvp", sys::os::getpid());
 		(real_execvp)(self.get_program().as_ptr(),
 			      self.get_argv().as_ptr())
 	    },
 	    None => {
-//		eprintln!("process_unix:332: pid {} using libc::execvp", sys::os::getpid());
 		libc::execvp(self.get_program().as_ptr(),
 			     self.get_argv().as_ptr())
 	    }
 	};
-	let e = io::Error::last_os_error();
-//	eprintln!("process_unix:257: pid {} do_exec of {:?} failed last_os_error={:?}", sys::os::getpid(), self.get_program(), e);
-        Err(e)
+	Err(io::Error::last_os_error())
     }
 
     #[cfg(not(any(
@@ -422,7 +373,6 @@ impl Command {
         use crate::mem::MaybeUninit;
         use crate::sys;
 
-	eprintln!("process_unix:289: in real posix_spawn");
 	let skip_spawnvp :bool = match getenv(&OsString::from("RUST_NO_SPAWNVP"))? {
 	    Some(_var) => true,
 	    None => false
@@ -434,7 +384,6 @@ impl Command {
             || !self.get_closures().is_empty()
 	    || skip_spawnvp
         {
-	    eprintln!("process_unix:295: pid {} posix_spawn NOPE gid:{} uid:{} env_saw_path:{} closures:{} skip_spawnvp:{}", sys::os::getpid(), self.get_gid().is_some(), self.get_uid().is_some(), self.env_saw_path(), !self.get_closures().is_empty(), skip_spawnvp);
             return Ok(None);
         }
 
@@ -463,9 +412,7 @@ impl Command {
         let addchdir = match self.get_cwd() {
             Some(cwd) => match posix_spawn_file_actions_addchdir_np.get() {
                 Some(f) => Some((f, cwd)),
-                None => {
-		    return Ok(None)
-		},
+                None => return Ok(None),
             },
             None => None,
         };
@@ -536,7 +483,6 @@ impl Command {
             // Make sure we synchronize access to the global `environ` resource
             let _env_lock = sys::os::env_lock();
             let envp = envp.map(|c| c.as_ptr()).unwrap_or_else(|| *sys::os::environ() as *const _);
-	    eprintln!("process_unix:394: pid {} doing posix_spawnp for {:?}", sys::os::getpid(), self.get_program());
             let ret = libc::posix_spawnp(
                 &mut p.pid,
                 self.get_program().as_ptr(),
@@ -545,7 +491,6 @@ impl Command {
                 self.get_argv().as_ptr() as *const _,
                 envp as *const _,
             );
-	    eprintln!("process_unix:32: pid {} spawned pid {} as child", sys::os::getpid(), p.pid);
             if ret == 0 { Ok(Some(p)) } else { Err(io::Error::from_raw_os_error(ret)) }
         }
     }

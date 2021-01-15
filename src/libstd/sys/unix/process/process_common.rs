@@ -96,21 +96,12 @@ pub(crate) type Dup2Fn = fn(c_int, c_int)->c_int;
 pub(crate) type ChdirFn = fn(*const c_char)->c_int;
 pub(crate) type SetuidFn = fn(uid_t)->c_int;
 pub(crate) type SetgidFn = fn(gid_t)->c_int;
-//pub(crate) type GetgidFn = fn()->gid_t;
-//pub(crate) type GetuidFn = fn(*const c_char)->c_int;
     
 // Create a new type for argv, so that we can make it `Send`
 struct Argv(Vec<*const c_char>);
 
 // It is safe to make Argv Send, because it contains pointers to memory owned by `Command.args`
 unsafe impl Send for Argv {}
-
-// This allows Command to push program to the start of env's arg list
-// impl Argv {
-//     pub fn insert_at_start(&mut self, v: *const c_char) {
-// 	self.0.insert(0, v);
-//     }
-// }
 
 // passed back to std::process with the pipes connected to the child, if any
 // were requested
