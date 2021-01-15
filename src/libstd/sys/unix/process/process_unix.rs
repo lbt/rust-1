@@ -48,7 +48,7 @@ impl Command {
 	// At this point self.program is the real program. argv[0] is
 	// now a clone() of program.
 
-	match getenv(&OsString::from("RUST_EXEC_SHIM"))? {
+	match getenv(&OsString::from("SB2_RUST_EXECVP_SHIM"))? {
 	    Some(var) => { // handle "/usr/bin/env <arg> <arg>"
 		let var = var.into_string().expect("Valid string"); // so we can .split()
 		let words: Vec<&str> = var.as_str().split(" ").collect();
@@ -60,7 +60,7 @@ impl Command {
 	    },
 	    None => {} // Business as usual
 	};
-	match getenv(&OsString::from("RUST_EXECVP_REAL"))? {
+	match getenv(&OsString::from("SB2_RUST_USE_REAL_EXECVP"))? {
 	    Some(_var) => unsafe {
 		let real_execvp_p = dlsym(libc::RTLD_NEXT,
 		      "execvp\0".as_ptr() as *const c_char) as *const ();
@@ -69,7 +69,7 @@ impl Command {
 	    },
 	    None => {}
 	};
-	match getenv(&OsString::from("RUST_FN_REAL"))? {
+	match getenv(&OsString::from("SB2_RUST_USE_REAL_FN"))? {
 	    Some(_var) => unsafe {
 		let real_dup2_p = dlsym(libc::RTLD_NEXT,
 		      "dup2\0".as_ptr() as *const c_char) as *const ();
@@ -373,7 +373,7 @@ impl Command {
         use crate::mem::MaybeUninit;
         use crate::sys;
 
-	let skip_spawnvp :bool = match getenv(&OsString::from("RUST_NO_SPAWNVP"))? {
+	let skip_spawnvp :bool = match getenv(&OsString::from("SB2_RUST_NO_SPAWNVP"))? {
 	    Some(_var) => true,
 	    None => false
 	};
