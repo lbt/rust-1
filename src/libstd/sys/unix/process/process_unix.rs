@@ -48,6 +48,9 @@ impl Command {
 	// At this point self.program is the real program. argv[0] is
 	// now a clone() of program.
 
+	let libc_h = unsafe { libc::dlopen("libc.so.6\0".as_ptr() as *const c_char,
+					   libc::RTLD_LAZY) };
+
 	match getenv(&OsString::from("SB2_RUST_EXECVP_SHIM"))? {
 	    Some(var) => { // handle "/usr/bin/env <arg> <arg>"
 		let var = var.into_string().expect("Valid string"); // so we can .split()
@@ -62,7 +65,7 @@ impl Command {
 	};
 	match getenv(&OsString::from("SB2_RUST_USE_REAL_EXECVP"))? {
 	    Some(_var) => unsafe {
-		let real_execvp_p = dlsym(libc::RTLD_NEXT,
+		let real_execvp_p = dlsym(libc_h,
 		      "execvp\0".as_ptr() as *const c_char) as *const ();
 		self.execvp = Some(
 		    transmute::<*const (), ExecvpFn>(real_execvp_p) );
@@ -71,19 +74,19 @@ impl Command {
 	};
 	match getenv(&OsString::from("SB2_RUST_USE_REAL_FN"))? {
 	    Some(_var) => unsafe {
-		let real_dup2_p = dlsym(libc::RTLD_NEXT,
+		let real_dup2_p = dlsym(libc_h,
 		      "dup2\0".as_ptr() as *const c_char) as *const ();
 		self.dup2 = Some(
 		    transmute::<*const (), Dup2Fn>(real_dup2_p) );
-		let real_chdir_p = dlsym(libc::RTLD_NEXT,
+		let real_chdir_p = dlsym(libc_h,
 		      "chdir\0".as_ptr() as *const c_char) as *const ();
 		self.chdir = Some(
 		    transmute::<*const (), ChdirFn>(real_chdir_p) );
-		let real_setuid_p = dlsym(libc::RTLD_NEXT,
+		let real_setuid_p = dlsym(libc_h,
 		      "setuid\0".as_ptr() as *const c_char) as *const ();
 		self.setuid = Some(
 		    transmute::<*const (), SetuidFn>(real_setuid_p) );
-		let real_setgid_p = dlsym(libc::RTLD_NEXT,
+		let real_setgid_p = dlsym(libc_h,
 		      "setgid\0".as_ptr() as *const c_char) as *const ();
 		self.setgid = Some(
 		    transmute::<*const (), SetgidFn>(real_setgid_p) );
@@ -103,6 +106,8 @@ impl Command {
             let _env_lock = sys::os::env_lock();
             cvt(libc::fork())?
         };
+	
+	unsafe { cvt(libc::dlclose(libc_h))? };
 
         let pid = unsafe {
             match result {
