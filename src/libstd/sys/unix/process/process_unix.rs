@@ -48,6 +48,7 @@ impl Command {
 	// At this point self.program is the real program. argv[0] is
 	// now a clone() of program.
 
+	eprintln!("process_unix: {} about to dlopen libc to bypass sb2 call", process::id());
 	let libc_h = unsafe { libc::dlopen("libc.so.6\0".as_ptr() as *const c_char,
 					   libc::RTLD_LAZY) };
 
@@ -93,6 +94,8 @@ impl Command {
 	    },
 	    None => {}
 	};
+	// We close before calling but that's OK as this is just a lookup handle
+	unsafe { cvt(libc::dlclose(libc_h))? };
 
         // Whatever happens after the fork is almost for sure going to touch or
         // look at the environment in one way or another (PATH in `execvp` or
@@ -107,8 +110,6 @@ impl Command {
             cvt(libc::fork())?
         };
 	
-	unsafe { cvt(libc::dlclose(libc_h))? };
-
         let pid = unsafe {
             match result {
                 0 => {
