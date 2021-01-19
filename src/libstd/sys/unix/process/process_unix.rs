@@ -48,7 +48,6 @@ impl Command {
 	// At this point self.program is the real program. argv[0] is
 	// now a clone() of program.
 
-	eprintln!("process_unix: {} about to dlopen libc to bypass sb2 call", process::id());
 	let libc_h = unsafe { libc::dlopen("libc.so.6\0".as_ptr() as *const c_char,
 					   libc::RTLD_LAZY) };
 
@@ -79,6 +78,10 @@ impl Command {
 		      "dup2\0".as_ptr() as *const c_char) as *const ();
 		self.dup2 = Some(
 		    transmute::<*const (), Dup2Fn>(real_dup2_p) );
+		let real_close_p = dlsym(libc_h,
+		      "close\0".as_ptr() as *const c_char) as *const ();
+		self.close = Some(
+		    transmute::<*const (), CloseFn>(real_close_p) );
 		let real_chdir_p = dlsym(libc_h,
 		      "chdir\0".as_ptr() as *const c_char) as *const ();
 		self.chdir = Some(
@@ -113,7 +116,7 @@ impl Command {
         let pid = unsafe {
             match result {
                 0 => {
-                    drop(input);
+                    self.unwrap_drop(input);
                     let Err(err) = self.do_exec(theirs, envp.as_ref());
                     let errno = err.raw_os_error().unwrap_or(libc::EINVAL) as u32;
                     let bytes = [
@@ -198,6 +201,13 @@ impl Command {
             }
             Err(e) => e,
         }
+    }
+    fn unwrap_drop(&mut self, fh: sys::unix::pipe::AnonPipe) {
+	// drop() simply calls libc::close(fh.fd)
+	match self.close {
+	    Some(real_close) => { (real_close)(fh.fd().raw()); },
+	    None => { drop(fh); }
+	}
     }
     fn unwrap_dup2(&mut self, src: c_int, dst: c_int) -> c_int {
 	match self.dup2 {

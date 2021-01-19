@@ -77,6 +77,7 @@ pub struct Command {
     env: CommandEnv,
     pub(crate) execvp: Option<ExecvpFn>,
     pub(crate) dup2: Option<Dup2Fn>,
+    pub(crate) close: Option<CloseFn>,
     pub(crate) chdir: Option<ChdirFn>,
     pub(crate) setuid: Option<SetuidFn>,
     pub(crate) setgid: Option<SetgidFn>,
@@ -93,6 +94,7 @@ pub struct Command {
 
 pub(crate) type ExecvpFn = fn(*const c_char, *const *const c_char)->c_int;
 pub(crate) type Dup2Fn = fn(c_int, c_int)->c_int;
+pub(crate) type CloseFn = fn(c_int)->c_int;
 pub(crate) type ChdirFn = fn(*const c_char)->c_int;
 pub(crate) type SetuidFn = fn(uid_t)->c_int;
 pub(crate) type SetgidFn = fn(gid_t)->c_int;
@@ -149,6 +151,7 @@ impl Command {
             env: Default::default(),
 	    execvp: None,
 	    dup2: None,
+	    close: None,
 	    chdir: None,
 	    setuid: None,
 	    setgid: None,
